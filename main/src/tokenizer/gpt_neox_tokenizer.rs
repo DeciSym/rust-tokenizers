@@ -17,12 +17,16 @@ use crate::tokenizer::tokenization_utils::{
 };
 use crate::tokenizer::tokenization_utils::{lowercase, BpeCache};
 use crate::tokenizer::{MultiThreadedTokenizer, Tokenizer};
+use crate::vocab::base_vocab::SpecialTokenMap;
 use crate::vocab::bpe_vocab::BpePairVocab;
 use crate::vocab::{GptNeoXVocab, Vocab};
 use crate::{Mask, Token, TokenRef};
 use itertools::Itertools;
 use regex::Regex;
+use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufReader;
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::RwLock;
@@ -216,6 +220,135 @@ impl GptNeoXTokenizer {
             add_bos_token,
             add_eos_token,
         }
+    }
+
+    /// Create a new instance of a `GptNeoXTokenizer` from a HuggingFace tokenizer.json file
+    /// 
+    /// # Parameters
+    /// - tokenizer_json_path (`&str`): path to the HuggingFace tokenizer.json file
+    /// - lower_case (`bool`): flag indicating if the text should be lower-cased as part of the tokenization
+    /// - add_prefix_space (`bool`): whether or not to add an initial space to the input
+    /// - add_bos_token (`bool`): whether or not to add a BOS token at the start of sequences
+    /// - add_eos_token (`bool`): whether or not to add an EOS token at the end of sequences
+    /// 
+    /// # Example
+    /// 
+    /// ```no_run
+    /// use rust_tokenizers::tokenizer::{GptNeoXTokenizer, Tokenizer};
+    /// let lower_case = false;
+    /// let add_prefix_space = false;
+    /// let add_bos_token = false;
+    /// let add_eos_token = false;
+    /// let tokenizer = GptNeoXTokenizer::from_tokenizer_json(
+    ///     "path/to/tokenizer.json",
+    ///     lower_case,
+    ///     add_prefix_space,
+    ///     add_bos_token,
+    ///     add_eos_token
+    /// ).unwrap();
+    /// ```
+    pub fn from_tokenizer_json<P: AsRef<Path>>(
+        tokenizer_json_path: P,
+        lower_case: bool,
+        add_prefix_space: bool,
+        add_bos_token: bool,
+        add_eos_token: bool,
+    ) -> Result<GptNeoXTokenizer, TokenizerError> {
+        let file = File::open(tokenizer_json_path)
+            .map_err(|e| TokenizerError::FileNotFound(e.to_string()))?;
+        let reader = BufReader::new(file);
+        let tokenizer_json: Value = serde_json::from_reader(reader)
+            .map_err(|e| TokenizerError::FileNotFound(e.to_string()))?;
+        
+        // Extract model section
+        let model = tokenizer_json.get("model")
+            .ok_or_else(|| TokenizerError::FileNotFound("Missing 'model' section in tokenizer.json".to_string()))?;
+        
+        // Verify it's a BPE model
+        let model_type = model.get("type")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| TokenizerError::FileNotFound("Missing model type".to_string()))?;
+        
+        if model_type != "BPE" {
+            return Err(TokenizerError::FileNotFound(format!("Expected BPE model, got {}", model_type)));
+        }
+        
+        // Extract vocabulary
+        let vocab_json = model.get("vocab")
+            .ok_or_else(|| TokenizerError::FileNotFound("Missing vocab in model".to_string()))?;
+        
+        let vocab_map: HashMap<String, i64> = serde_json::from_value(vocab_json.clone())
+            .map_err(|e| TokenizerError::FileNotFound(format!("Failed to parse vocab: {}", e)))?;
+        
+        // Extract merges
+        let merges_json = model.get("merges")
+            .ok_or_else(|| TokenizerError::FileNotFound("Missing merges in model".to_string()))?;
+        
+        let merges_vec: Vec<String> = serde_json::from_value(merges_json.clone())
+            .map_err(|e| TokenizerError::FileNotFound(format!("Failed to parse merges: {}", e)))?;
+        
+        // Convert merges to BpePairVocab format
+        let mut bpe_ranks = HashMap::new();
+        for (idx, merge) in merges_vec.iter().enumerate() {
+            let parts: Vec<&str> = merge.split(' ').collect();
+            if parts.len() == 2 {
+                bpe_ranks.insert((parts[0].to_string(), parts[1].to_string()), idx as i64);
+            }
+        }
+        
+        // Extract special tokens from added_tokens section
+        let mut unk_token = "<|endoftext|>".to_string();
+        let mut bos_token = None;
+        let mut eos_token = None;
+        let mut pad_token = None;
+        
+        if let Some(added_tokens) = tokenizer_json.get("added_tokens").and_then(|t| t.as_array()) {
+            for token in added_tokens {
+                if let (Some(content), Some(_id), Some(special)) = (
+                    token.get("content").and_then(|c| c.as_str()),
+                    token.get("id").and_then(|i| i.as_i64()),
+                    token.get("special").and_then(|s| s.as_bool())
+                ) {
+                    if special {
+                        match content {
+                            "<|endoftext|>" => {
+                                unk_token = content.to_string();
+                                bos_token = Some(content.to_string());
+                                eos_token = Some(content.to_string());
+                            }
+                            "<|padding|>" => {
+                                pad_token = Some(content.to_string());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        
+        let special_token_map = SpecialTokenMap {
+            unk_token,
+            pad_token,
+            bos_token,
+            sep_token: None,
+            cls_token: None,
+            eos_token,
+            mask_token: None,
+            additional_special_tokens: None,
+        };
+        
+        // Create the vocabulary
+        let vocab = GptNeoXVocab::from_values_and_special_token_map(vocab_map, special_token_map)?;
+        let bpe_vocab = BpePairVocab { values: bpe_ranks };
+        
+        Ok(GptNeoXTokenizer::from_existing_vocab_and_merges(
+            vocab,
+            bpe_vocab,
+            lower_case,
+            add_prefix_space,
+            add_bos_token,
+            add_eos_token,
+        ))
     }
 }
 
