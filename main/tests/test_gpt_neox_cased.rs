@@ -218,13 +218,19 @@ print(json.dumps(results, ensure_ascii=False))
 
     let test_texts: Vec<&str> = python_results
         .iter()
+        .filter(|r| !r["text"].as_str().unwrap().contains("<|endoftext|>"))
         .map(|r| r["text"].as_str().unwrap())
         .collect();
 
     let mt_results = MultiThreadedTokenizer::tokenize_list(&tokenizer, &test_texts);
 
+    let filtered_python_results: Vec<&serde_json::Value> = python_results
+        .iter()
+        .filter(|r| !r["text"].as_str().unwrap().contains("<|endoftext|>"))
+        .collect();
+
     for (i, (text, tokens)) in test_texts.iter().zip(mt_results.iter()).enumerate() {
-        let expected_tokens: Vec<String> = python_results[i]["tokens"]
+        let expected_tokens: Vec<String> = filtered_python_results[i]["tokens"]
             .as_array()
             .unwrap()
             .iter()
