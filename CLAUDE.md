@@ -53,11 +53,13 @@ cargo test
 cargo test test_bert_uncased
 
 # Format code
-cargo fmt
+cargo fmt --manifest-path ./main/Cargo.toml
 
 # Lint code
 cargo clippy
 ```
+
+Format all code before committing to git.
 
 ### Python Development
 

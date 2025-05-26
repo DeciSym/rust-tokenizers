@@ -223,16 +223,16 @@ impl GptNeoXTokenizer {
     }
 
     /// Create a new instance of a `GptNeoXTokenizer` from a HuggingFace tokenizer.json file
-    /// 
+    ///
     /// # Parameters
     /// - tokenizer_json_path (`&str`): path to the HuggingFace tokenizer.json file
     /// - lower_case (`bool`): flag indicating if the text should be lower-cased as part of the tokenization
     /// - add_prefix_space (`bool`): whether or not to add an initial space to the input
     /// - add_bos_token (`bool`): whether or not to add a BOS token at the start of sequences
     /// - add_eos_token (`bool`): whether or not to add an EOS token at the end of sequences
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```no_run
     /// use rust_tokenizers::tokenizer::{GptNeoXTokenizer, Tokenizer};
     /// let lower_case = false;
@@ -259,34 +259,41 @@ impl GptNeoXTokenizer {
         let reader = BufReader::new(file);
         let tokenizer_json: Value = serde_json::from_reader(reader)
             .map_err(|e| TokenizerError::FileNotFound(e.to_string()))?;
-        
+
         // Extract model section
-        let model = tokenizer_json.get("model")
-            .ok_or_else(|| TokenizerError::FileNotFound("Missing 'model' section in tokenizer.json".to_string()))?;
-        
+        let model = tokenizer_json.get("model").ok_or_else(|| {
+            TokenizerError::FileNotFound("Missing 'model' section in tokenizer.json".to_string())
+        })?;
+
         // Verify it's a BPE model
-        let model_type = model.get("type")
+        let model_type = model
+            .get("type")
             .and_then(|t| t.as_str())
             .ok_or_else(|| TokenizerError::FileNotFound("Missing model type".to_string()))?;
-        
+
         if model_type != "BPE" {
-            return Err(TokenizerError::FileNotFound(format!("Expected BPE model, got {}", model_type)));
+            return Err(TokenizerError::FileNotFound(format!(
+                "Expected BPE model, got {}",
+                model_type
+            )));
         }
-        
+
         // Extract vocabulary
-        let vocab_json = model.get("vocab")
+        let vocab_json = model
+            .get("vocab")
             .ok_or_else(|| TokenizerError::FileNotFound("Missing vocab in model".to_string()))?;
-        
+
         let vocab_map: HashMap<String, i64> = serde_json::from_value(vocab_json.clone())
             .map_err(|e| TokenizerError::FileNotFound(format!("Failed to parse vocab: {}", e)))?;
-        
+
         // Extract merges
-        let merges_json = model.get("merges")
+        let merges_json = model
+            .get("merges")
             .ok_or_else(|| TokenizerError::FileNotFound("Missing merges in model".to_string()))?;
-        
+
         let merges_vec: Vec<String> = serde_json::from_value(merges_json.clone())
             .map_err(|e| TokenizerError::FileNotFound(format!("Failed to parse merges: {}", e)))?;
-        
+
         // Convert merges to BpePairVocab format
         let mut bpe_ranks = HashMap::new();
         for (idx, merge) in merges_vec.iter().enumerate() {
@@ -295,19 +302,22 @@ impl GptNeoXTokenizer {
                 bpe_ranks.insert((parts[0].to_string(), parts[1].to_string()), idx as i64);
             }
         }
-        
+
         // Extract special tokens from added_tokens section
         let mut unk_token = "<|endoftext|>".to_string();
         let mut bos_token = None;
         let mut eos_token = None;
         let mut pad_token = None;
-        
-        if let Some(added_tokens) = tokenizer_json.get("added_tokens").and_then(|t| t.as_array()) {
+
+        if let Some(added_tokens) = tokenizer_json
+            .get("added_tokens")
+            .and_then(|t| t.as_array())
+        {
             for token in added_tokens {
                 if let (Some(content), Some(_id), Some(special)) = (
                     token.get("content").and_then(|c| c.as_str()),
                     token.get("id").and_then(|i| i.as_i64()),
-                    token.get("special").and_then(|s| s.as_bool())
+                    token.get("special").and_then(|s| s.as_bool()),
                 ) {
                     if special {
                         match content {
@@ -325,7 +335,7 @@ impl GptNeoXTokenizer {
                 }
             }
         }
-        
+
         let special_token_map = SpecialTokenMap {
             unk_token,
             pad_token,
@@ -336,11 +346,11 @@ impl GptNeoXTokenizer {
             mask_token: None,
             additional_special_tokens: None,
         };
-        
+
         // Create the vocabulary
         let vocab = GptNeoXVocab::from_values_and_special_token_map(vocab_map, special_token_map)?;
         let bpe_vocab = BpePairVocab { values: bpe_ranks };
-        
+
         Ok(GptNeoXTokenizer::from_existing_vocab_and_merges(
             vocab,
             bpe_vocab,
@@ -370,7 +380,8 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
                 masks: vec![],
             };
         }
-        let initial_offsets = (0..text.chars().count() as crate::OffsetSize).collect::<Vec<crate::OffsetSize>>();
+        let initial_offsets =
+            (0..text.chars().count() as crate::OffsetSize).collect::<Vec<crate::OffsetSize>>();
         let initial_token = crate::TokenRef::new(text, &initial_offsets);
         let tokens = self.tokenize_to_tokens(initial_token);
         let length = tokens.len();
@@ -402,13 +413,16 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
 
     fn tokenize_to_tokens(&self, initial_token: TokenRef) -> Vec<Token> {
         let mut initial_token = initial_token.to_owned();
-        
+
         // Add prefix space if needed
-        if self.add_prefix_space && !initial_token.text.is_empty() && !initial_token.text.starts_with(' ') {
+        if self.add_prefix_space
+            && !initial_token.text.is_empty()
+            && !initial_token.text.starts_with(' ')
+        {
             initial_token.text.insert(0, ' ');
             initial_token.reference_offsets.insert(0, 0);
         }
-        
+
         let mut tokens = split_on_special_tokens(initial_token.as_ref(), &self.vocab)
             .into_iter()
             .map(|token| token.to_owned())
@@ -467,7 +481,7 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
             reference_offsets: Vec::new(),
             mask: Vec::new(),
         };
-        
+
         // Add BOS token if needed
         if self.add_bos_token {
             if let Some(bos_id) = self.vocab.special_values.get(self.vocab.get_bos_value()) {
@@ -479,15 +493,23 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
                 output.mask.push(Mask::Special);
             }
         }
-        
+
         // Add first sequence
         output.token_ids.extend(&tokens_ids_with_offsets_1.ids);
-        output.segment_ids.extend(vec![0; tokens_ids_with_offsets_1.ids.len()]);
-        output.special_tokens_mask.extend(vec![0; tokens_ids_with_offsets_1.ids.len()]);
-        output.token_offsets.extend(tokens_ids_with_offsets_1.offsets);
-        output.reference_offsets.extend(tokens_ids_with_offsets_1.reference_offsets);
+        output
+            .segment_ids
+            .extend(vec![0; tokens_ids_with_offsets_1.ids.len()]);
+        output
+            .special_tokens_mask
+            .extend(vec![0; tokens_ids_with_offsets_1.ids.len()]);
+        output
+            .token_offsets
+            .extend(tokens_ids_with_offsets_1.offsets);
+        output
+            .reference_offsets
+            .extend(tokens_ids_with_offsets_1.reference_offsets);
         output.mask.extend(tokens_ids_with_offsets_1.masks);
-        
+
         // Add EOS token after first sequence if needed
         if self.add_eos_token {
             if let Some(eos_id) = self.vocab.special_values.get(self.vocab.get_eos_value()) {
@@ -499,7 +521,7 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
                 output.mask.push(Mask::Special);
             }
         }
-        
+
         // Add second sequence if provided
         if let Some(tokens_2) = tokens_ids_with_offsets_2 {
             // Add BOS token before second sequence if needed
@@ -513,14 +535,16 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
                     output.mask.push(Mask::Special);
                 }
             }
-            
+
             output.token_ids.extend(&tokens_2.ids);
             output.segment_ids.extend(vec![1; tokens_2.ids.len()]);
-            output.special_tokens_mask.extend(vec![0; tokens_2.ids.len()]);
+            output
+                .special_tokens_mask
+                .extend(vec![0; tokens_2.ids.len()]);
             output.token_offsets.extend(tokens_2.offsets);
             output.reference_offsets.extend(tokens_2.reference_offsets);
             output.mask.extend(tokens_2.masks);
-            
+
             // Add EOS token after second sequence if needed
             if self.add_eos_token {
                 if let Some(eos_id) = self.vocab.special_values.get(self.vocab.get_eos_value()) {
@@ -533,7 +557,7 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
                 }
             }
         }
-        
+
         output
     }
 }
@@ -618,8 +642,9 @@ mod tests {
         //        Given
         let vocab = generate_test_vocab();
         let merges = generate_test_merges();
-        let gpt_neox_tokenizer: GptNeoXTokenizer =
-            GptNeoXTokenizer::from_existing_vocab_and_merges(vocab, merges, true, false, false, false);
+        let gpt_neox_tokenizer: GptNeoXTokenizer = GptNeoXTokenizer::from_existing_vocab_and_merges(
+            vocab, merges, true, false, false, false,
+        );
         let test_tuples = [
             ("the Earth", vec!["the", "Ġear", "th"]),
             ("", vec![]),
@@ -647,8 +672,9 @@ mod tests {
         //        Given
         let vocab = generate_test_vocab();
         let merges = generate_test_merges();
-        let gpt_neox_tokenizer: GptNeoXTokenizer =
-            GptNeoXTokenizer::from_existing_vocab_and_merges(vocab, merges, true, true, false, false);
+        let gpt_neox_tokenizer: GptNeoXTokenizer = GptNeoXTokenizer::from_existing_vocab_and_merges(
+            vocab, merges, true, true, false, false,
+        );
         let test_tuples = [
             ("the Earth", vec!["Ġthe", "Ġear", "th"]),
             ("", vec![]),
@@ -667,8 +693,9 @@ mod tests {
         //        Given
         let vocab = generate_test_vocab();
         let merges = generate_test_merges();
-        let gpt_neox_tokenizer: GptNeoXTokenizer =
-            GptNeoXTokenizer::from_existing_vocab_and_merges(vocab, merges, false, false, false, false);
+        let gpt_neox_tokenizer: GptNeoXTokenizer = GptNeoXTokenizer::from_existing_vocab_and_merges(
+            vocab, merges, false, false, false, false,
+        );
         let test_tuples = [
             ("the Earth", vec!["the", "Ġ", "E", "a", "r", "th"]),
             ("", vec![]),
@@ -695,30 +722,41 @@ mod tests {
         //        Given
         let vocab = generate_test_vocab();
         let merges = generate_test_merges();
-        let gpt_neox_tokenizer: GptNeoXTokenizer =
-            GptNeoXTokenizer::from_existing_vocab_and_merges(vocab, merges, true, false, true, true);
+        let gpt_neox_tokenizer: GptNeoXTokenizer = GptNeoXTokenizer::from_existing_vocab_and_merges(
+            vocab, merges, true, false, true, true,
+        );
         let truncation_strategy = TruncationStrategy::LongestFirst;
-        let test_tuples = [
-            (
-                "the earth",
-                TokenizedInput {
-                    token_ids: vec![6, 4, 8, 9, 6],
-                    segment_ids: vec![0, 0, 0, 0, 0],
-                    special_tokens_mask: vec![1, 0, 0, 0, 1],
-                    overflowing_tokens: vec![],
-                    num_truncated_tokens: 0,
-                    token_offsets: vec![
-                        None,
-                        Some(Offset { begin: 0, end: 3 }),
-                        Some(Offset { begin: 3, end: 7 }),
-                        Some(Offset { begin: 7, end: 9 }),
-                        None,
-                    ],
-                    reference_offsets: vec![vec![], vec![0, 1, 2], vec![3, 4, 5, 6], vec![7, 8], vec![]],
-                    mask: vec![Mask::Special, Mask::None, Mask::Begin, Mask::Continuation, Mask::Special],
-                },
-            ),
-        ];
+        let test_tuples = [(
+            "the earth",
+            TokenizedInput {
+                token_ids: vec![6, 4, 8, 9, 6],
+                segment_ids: vec![0, 0, 0, 0, 0],
+                special_tokens_mask: vec![1, 0, 0, 0, 1],
+                overflowing_tokens: vec![],
+                num_truncated_tokens: 0,
+                token_offsets: vec![
+                    None,
+                    Some(Offset { begin: 0, end: 3 }),
+                    Some(Offset { begin: 3, end: 7 }),
+                    Some(Offset { begin: 7, end: 9 }),
+                    None,
+                ],
+                reference_offsets: vec![
+                    vec![],
+                    vec![0, 1, 2],
+                    vec![3, 4, 5, 6],
+                    vec![7, 8],
+                    vec![],
+                ],
+                mask: vec![
+                    Mask::Special,
+                    Mask::None,
+                    Mask::Begin,
+                    Mask::Continuation,
+                    Mask::Special,
+                ],
+            },
+        )];
 
         //        When & Then
         for (source_text, expected_result) in test_tuples.iter() {
@@ -734,8 +772,9 @@ mod tests {
         //        Given
         let vocab = generate_test_vocab();
         let merges = generate_test_merges();
-        let gpt_neox_tokenizer: GptNeoXTokenizer =
-            GptNeoXTokenizer::from_existing_vocab_and_merges(vocab, merges, true, false, false, false);
+        let gpt_neox_tokenizer: GptNeoXTokenizer = GptNeoXTokenizer::from_existing_vocab_and_merges(
+            vocab, merges, true, false, false, false,
+        );
         let skip_special_tokens = false;
         let clean_up_tokenization_spaces = false;
         let test_tuples = [(vec![4, 8, 9], "the earth")];

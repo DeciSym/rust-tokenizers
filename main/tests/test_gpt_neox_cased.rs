@@ -76,7 +76,7 @@ print(json.dumps(results, ensure_ascii=False))
     // Create a temporary Python script file
     let mut script_file = NamedTempFile::new()?;
     std::io::Write::write_all(&mut script_file, python_test_script.as_bytes())?;
-    
+
     // Run the Python script using the specified virtual environment
     let output = Command::new("/home/aac/projects/rust-bert/.venv/bin/python")
         .arg(script_file.path())
@@ -96,13 +96,13 @@ print(json.dumps(results, ensure_ascii=False))
 
     for result in python_results.iter() {
         let text = result["text"].as_str().unwrap();
-        
+
         // Skip the special token test case - there's a known issue with space handling before special tokens
         if text.contains("<|endoftext|>") {
             println!("\nSkipping test with special tokens due to known issue");
             continue;
         }
-        
+
         println!("\nTesting: {:?}", text);
 
         // Test basic tokenization
@@ -116,7 +116,9 @@ print(json.dumps(results, ensure_ascii=False))
         );
 
         let rust_tokens = tokenizer.tokenize(text);
-        let rust_token_ids = tokenizer.encode(text, None, 512, &TruncationStrategy::LongestFirst, 0).token_ids;
+        let rust_token_ids = tokenizer
+            .encode(text, None, 512, &TruncationStrategy::LongestFirst, 0)
+            .token_ids;
 
         let py_tokens: Vec<String> = result["tokens"]
             .as_array()
@@ -136,8 +138,16 @@ print(json.dumps(results, ensure_ascii=False))
         println!("Rust token IDs: {:?}", rust_token_ids);
         println!("Python token IDs: {:?}", py_token_ids);
 
-        assert_eq!(rust_tokens, py_tokens, "Tokens mismatch for text: {:?}", text);
-        assert_eq!(rust_token_ids, py_token_ids, "Token IDs mismatch for text: {:?}", text);
+        assert_eq!(
+            rust_tokens, py_tokens,
+            "Tokens mismatch for text: {:?}",
+            text
+        );
+        assert_eq!(
+            rust_token_ids, py_token_ids,
+            "Token IDs mismatch for text: {:?}",
+            text
+        );
 
         // Test with prefix space
         let tokenizer_prefix = GptNeoXTokenizer::from_existing_vocab_and_merges(
@@ -160,7 +170,11 @@ print(json.dumps(results, ensure_ascii=False))
         println!("Rust tokens (prefix): {:?}", rust_tokens_prefix);
         println!("Python tokens (prefix): {:?}", py_tokens_prefix);
 
-        assert_eq!(rust_tokens_prefix, py_tokens_prefix, "Tokens with prefix mismatch for text: {:?}", text);
+        assert_eq!(
+            rust_tokens_prefix, py_tokens_prefix,
+            "Tokens with prefix mismatch for text: {:?}",
+            text
+        );
 
         // Test with BOS/EOS
         let tokenizer_special = GptNeoXTokenizer::from_existing_vocab_and_merges(
@@ -172,7 +186,9 @@ print(json.dumps(results, ensure_ascii=False))
             true,  // add_eos_token
         );
 
-        let rust_token_ids_special = tokenizer_special.encode(text, None, 512, &TruncationStrategy::LongestFirst, 0).token_ids;
+        let rust_token_ids_special = tokenizer_special
+            .encode(text, None, 512, &TruncationStrategy::LongestFirst, 0)
+            .token_ids;
         let py_token_ids_special: Vec<i64> = result["token_ids_with_special"]
             .as_array()
             .unwrap()
@@ -183,7 +199,11 @@ print(json.dumps(results, ensure_ascii=False))
         println!("Rust token IDs (BOS/EOS): {:?}", rust_token_ids_special);
         println!("Python token IDs (BOS/EOS): {:?}", py_token_ids_special);
 
-        assert_eq!(rust_token_ids_special, py_token_ids_special, "Token IDs with BOS/EOS mismatch for text: {:?}", text);
+        assert_eq!(
+            rust_token_ids_special, py_token_ids_special,
+            "Token IDs with BOS/EOS mismatch for text: {:?}",
+            text
+        );
     }
 
     // Test multi-threaded tokenization
@@ -202,7 +222,7 @@ print(json.dumps(results, ensure_ascii=False))
         .collect();
 
     let mt_results = MultiThreadedTokenizer::tokenize_list(&tokenizer, &test_texts);
-    
+
     for (i, (text, tokens)) in test_texts.iter().zip(mt_results.iter()).enumerate() {
         let expected_tokens: Vec<String> = python_results[i]["tokens"]
             .as_array()
@@ -210,8 +230,12 @@ print(json.dumps(results, ensure_ascii=False))
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        
-        assert_eq!(*tokens, expected_tokens, "Multi-threaded tokenization mismatch for: {:?}", text);
+
+        assert_eq!(
+            *tokens, expected_tokens,
+            "Multi-threaded tokenization mismatch for: {:?}",
+            text
+        );
     }
 
     // Clean up temporary files
@@ -254,7 +278,7 @@ print(json.dumps(results, ensure_ascii=False))
 
     let mut script_file = NamedTempFile::new()?;
     std::io::Write::write_all(&mut script_file, python_test_script.as_bytes())?;
-    
+
     let output = Command::new("/home/aac/projects/rust-bert/.venv/bin/python")
         .arg(script_file.path())
         .output()
@@ -270,14 +294,8 @@ print(json.dumps(results, ensure_ascii=False))
     // Load vocabulary and merges
     let vocab = GptNeoXVocab::from_file("/tmp/gpt_neox_vocab.json")?;
     let merges = BpePairVocab::from_file("/tmp/gpt_neox_merges.txt")?;
-    let tokenizer = GptNeoXTokenizer::from_existing_vocab_and_merges(
-        vocab,
-        merges,
-        false,
-        false,
-        false,
-        false,
-    );
+    let tokenizer =
+        GptNeoXTokenizer::from_existing_vocab_and_merges(vocab, merges, false, false, false, false);
 
     for result in python_results.iter() {
         let ids: Vec<i64> = result["ids"]
@@ -286,25 +304,33 @@ print(json.dumps(results, ensure_ascii=False))
             .iter()
             .map(|v| v.as_i64().unwrap())
             .collect();
-        
+
         let rust_decoded = tokenizer.decode(&ids, false, false);
         let py_decoded = result["decoded"].as_str().unwrap();
-        
+
         let rust_decoded_skip = tokenizer.decode(&ids, true, false);
         let py_decoded_skip = result["decoded_skip_special"].as_str().unwrap();
-        
+
         println!("\nDecoding IDs: {:?}", ids);
         println!("Rust decoded: {:?}", rust_decoded);
         println!("Python decoded: {:?}", py_decoded);
-        
-        assert_eq!(rust_decoded, py_decoded, "Decode mismatch for IDs: {:?}", ids);
-        assert_eq!(rust_decoded_skip, py_decoded_skip, "Decode with skip_special mismatch for IDs: {:?}", ids);
+
+        assert_eq!(
+            rust_decoded, py_decoded,
+            "Decode mismatch for IDs: {:?}",
+            ids
+        );
+        assert_eq!(
+            rust_decoded_skip, py_decoded_skip,
+            "Decode with skip_special mismatch for IDs: {:?}",
+            ids
+        );
     }
 
     Ok(())
 }
 
-#[test] 
+#[test]
 fn test_gpt_neox_special_tokens() -> anyhow::Result<()> {
     // Test special token handling
     let python_test_script = r#"
@@ -330,7 +356,7 @@ print(json.dumps(special_tokens))
 
     let mut script_file = NamedTempFile::new()?;
     std::io::Write::write_all(&mut script_file, python_test_script.as_bytes())?;
-    
+
     let output = Command::new("/home/aac/projects/rust-bert/.venv/bin/python")
         .arg(script_file.path())
         .output()
@@ -345,17 +371,26 @@ print(json.dumps(special_tokens))
 
     // Load vocabulary
     let vocab = GptNeoXVocab::from_file("/tmp/gpt_neox_vocab.json")?;
-    
+
     // Verify special tokens match
-    assert_eq!(vocab.get_unknown_value(), special_tokens["unk_token"].as_str().unwrap());
-    assert_eq!(vocab.get_bos_value(), special_tokens["bos_token"].as_str().unwrap());
-    assert_eq!(vocab.get_eos_value(), special_tokens["eos_token"].as_str().unwrap());
-    
+    assert_eq!(
+        vocab.get_unknown_value(),
+        special_tokens["unk_token"].as_str().unwrap()
+    );
+    assert_eq!(
+        vocab.get_bos_value(),
+        special_tokens["bos_token"].as_str().unwrap()
+    );
+    assert_eq!(
+        vocab.get_eos_value(),
+        special_tokens["eos_token"].as_str().unwrap()
+    );
+
     // Verify special token IDs
     let unk_id = vocab.token_to_id(vocab.get_unknown_value());
     let bos_id = vocab.token_to_id(vocab.get_bos_value());
     let eos_id = vocab.token_to_id(vocab.get_eos_value());
-    
+
     assert_eq!(unk_id, special_tokens["unk_token_id"].as_i64().unwrap());
     assert_eq!(bos_id, special_tokens["bos_token_id"].as_i64().unwrap());
     assert_eq!(eos_id, special_tokens["eos_token_id"].as_i64().unwrap());

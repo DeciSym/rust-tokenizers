@@ -211,7 +211,10 @@ mod tests {
             "<|endoftext|>"
         );
         assert_eq!(gpt_neox_vocab.values, *gpt_neox_vocab.values());
-        assert_eq!(gpt_neox_vocab.special_values, *gpt_neox_vocab.special_values());
+        assert_eq!(
+            gpt_neox_vocab.special_values,
+            *gpt_neox_vocab.special_values()
+        );
     }
 
     #[test]
