@@ -53,6 +53,7 @@ mod roberta_vocab;
 mod sentence_piece_bpe_model;
 mod sentence_piece_unigram_model;
 mod sentence_piece_vocab;
+#[allow(renamed_and_removed_lints)]
 pub(crate) mod sentencepiece_proto;
 mod t5_vocab;
 mod xlm_roberta_vocab;
