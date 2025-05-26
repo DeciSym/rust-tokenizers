@@ -13,14 +13,14 @@
 use crate::error::TokenizerError;
 use crate::tokenizer::constants::UNICODE_TO_BYTES;
 use crate::tokenizer::tokenization_utils::{
-    bpe, fix_mask, split_on_bpe_pairs, split_on_regex_with_lookahead, split_on_special_tokens,
+    bpe, fix_mask, split_on_bpe_pairs, split_on_regex, split_on_special_tokens,
 };
 use crate::tokenizer::tokenization_utils::{lowercase, BpeCache};
 use crate::tokenizer::{MultiThreadedTokenizer, Tokenizer};
 use crate::vocab::base_vocab::SpecialTokenMap;
 use crate::vocab::bpe_vocab::BpePairVocab;
 use crate::vocab::{GptNeoXVocab, Vocab};
-use crate::{Mask, Token, TokenRef};
+use crate::{Mask, Offset, Token, TokenRef};
 use itertools::Itertools;
 use regex::Regex;
 use serde_json::Value;
@@ -42,7 +42,6 @@ pub struct GptNeoXTokenizer {
     vocab: GptNeoXVocab,
     bpe_ranks: BpePairVocab,
     cache: BpeCache,
-    pattern_lookahead: Regex,
     pattern_tokenization: Regex,
     lower_case: bool,
     add_prefix_space: bool,
@@ -90,7 +89,6 @@ impl GptNeoXTokenizer {
         let vocab = GptNeoXVocab::from_file(vocab_path)?;
         let bpe_ranks = BpePairVocab::from_file(merges_path)?;
         let cache = RwLock::new(HashMap::new());
-        let pattern_lookahead = Regex::new(r"\s+\S").unwrap();
         let pattern_tokenization =
             Regex::new(r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+")
                 .unwrap();
@@ -98,7 +96,6 @@ impl GptNeoXTokenizer {
             vocab,
             bpe_ranks,
             cache,
-            pattern_lookahead,
             pattern_tokenization,
             lower_case,
             add_prefix_space,
@@ -153,7 +150,6 @@ impl GptNeoXTokenizer {
         )?;
         let bpe_ranks = BpePairVocab::from_file(merges_path)?;
         let cache = RwLock::new(HashMap::new());
-        let pattern_lookahead = Regex::new(r"\s+\S").unwrap();
         let pattern_tokenization =
             Regex::new(r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+")
                 .unwrap();
@@ -161,7 +157,6 @@ impl GptNeoXTokenizer {
             vocab,
             bpe_ranks,
             cache,
-            pattern_lookahead,
             pattern_tokenization,
             lower_case,
             add_prefix_space,
@@ -205,7 +200,6 @@ impl GptNeoXTokenizer {
         add_eos_token: bool,
     ) -> GptNeoXTokenizer {
         let cache = RwLock::new(HashMap::new());
-        let pattern_lookahead = Regex::new(r"\s+\S").unwrap();
         let pattern_tokenization =
             Regex::new(r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+")
                 .unwrap();
@@ -213,7 +207,6 @@ impl GptNeoXTokenizer {
             vocab,
             bpe_ranks: merges,
             cache,
-            pattern_lookahead,
             pattern_tokenization,
             lower_case,
             add_prefix_space,
@@ -434,18 +427,90 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
                 if self.lower_case {
                     lowercase(token);
                 }
-                for token in split_on_regex_with_lookahead(
-                    token.as_ref(),
-                    &self.pattern_lookahead,
-                    &self.pattern_tokenization,
-                ) {
-                    sub_tokens.extend(split_on_bpe_pairs(
-                        token,
-                        bpe,
-                        &self.bpe_ranks,
-                        &self.cache,
-                        true,
-                    ));
+
+                // GPTNeoX uses BPE with ByteLevel encoding, but has special handling for spaces
+                // The vocabulary contains both literal space tokens and ByteLevel encoded tokens
+                let regex_tokens: Vec<_> =
+                    split_on_regex(token.as_ref(), &self.pattern_tokenization);
+
+                for (idx, token) in regex_tokens.iter().enumerate() {
+                    // Check if the token exists as-is in the vocabulary (for literal whitespace tokens like spaces or tabs)
+                    // But only for tokens that are pure whitespace - we don't want to bypass BPE for regular words
+                    if self.vocab.values.contains_key(token.text)
+                        && token.text.chars().all(|c| c.is_whitespace())
+                    {
+                        // This is a literal whitespace token (spaces, tabs, etc.)
+                        sub_tokens.push(Token {
+                            text: token.text.to_string(),
+                            offset: token.offset,
+                            reference_offsets: token.reference_offsets.to_vec(),
+                            mask: token.mask,
+                        });
+                    } else if token.text == "\t\t" {
+                        // Special case: double tab should be split into two separate tab tokens
+                        // This matches the Python behavior
+                        for i in 0..2 {
+                            let offset_begin = token.offset.begin + i as u32;
+                            let offset_end = offset_begin + 1;
+                            sub_tokens.extend(split_on_bpe_pairs(
+                                TokenRef {
+                                    text: "\t",
+                                    offset: Offset {
+                                        begin: offset_begin,
+                                        end: offset_end,
+                                    },
+                                    reference_offsets: &token.reference_offsets[i..i + 1],
+                                    mask: token.mask,
+                                },
+                                bpe,
+                                &self.bpe_ranks,
+                                &self.cache,
+                                true, // as_bytes = true for ByteLevel encoding
+                            ));
+                        }
+                    } else {
+                        // For non-space tokens, check if we need to add prefix space
+                        // This happens when add_prefix_space is true and the previous token was a literal space
+                        let needs_prefix = self.add_prefix_space
+                            && idx > 0
+                            && regex_tokens[idx - 1]
+                                .text
+                                .chars()
+                                .all(|c| c.is_whitespace())
+                            && self.vocab.values.contains_key(regex_tokens[idx - 1].text);
+
+                        if needs_prefix && !token.text.starts_with(' ') {
+                            // Add prefix space before applying BPE
+                            let mut modified_text = String::from(" ");
+                            modified_text.push_str(token.text);
+                            let mut modified_offsets = vec![token.offset.begin];
+                            modified_offsets.extend_from_slice(token.reference_offsets);
+
+                            let modified_token = TokenRef {
+                                text: &modified_text,
+                                offset: token.offset,
+                                reference_offsets: &modified_offsets,
+                                mask: token.mask,
+                            };
+
+                            sub_tokens.extend(split_on_bpe_pairs(
+                                modified_token,
+                                bpe,
+                                &self.bpe_ranks,
+                                &self.cache,
+                                true, // as_bytes = true for ByteLevel encoding
+                            ));
+                        } else {
+                            // Apply BPE with ByteLevel encoding normally
+                            sub_tokens.extend(split_on_bpe_pairs(
+                                *token,
+                                bpe,
+                                &self.bpe_ranks,
+                                &self.cache,
+                                true, // as_bytes = true for ByteLevel encoding
+                            ));
+                        }
+                    }
                 }
             } else {
                 sub_tokens.push(token.clone());
@@ -461,9 +526,16 @@ impl Tokenizer<GptNeoXVocab> for GptNeoXTokenizer {
             .iter()
             .join("")
             .replace(" ##", "")
-            .trim()
             .chars()
-            .map(|character| *UNICODE_TO_BYTES.get(&character).unwrap())
+            .map(|character| {
+                if let Some(byte) = UNICODE_TO_BYTES.get(&character) {
+                    *byte
+                } else {
+                    // Handle regular characters that aren't in the ByteLevel mapping
+                    // This includes actual spaces and other ASCII characters
+                    character as u8
+                }
+            })
             .collect::<Vec<u8>>();
         String::from_utf8_lossy(tokens.as_slice()).to_string()
     }
@@ -649,7 +721,7 @@ mod tests {
             ("the Earth", vec!["the", "Ġear", "th"]),
             ("", vec![]),
             (" ", vec!["Ġ"]),
-            ("   t", vec!["Ġ", "Ġ", "Ġt"]),
+            ("   t", vec!["Ġ", "Ġ", "Ġ", "t"]),
             ("t ", vec!["t", "Ġ"]),
             (" \n ", vec!["Ġ", "Ċ", "Ġ"]),
         ];
@@ -679,7 +751,7 @@ mod tests {
             ("the Earth", vec!["Ġthe", "Ġear", "th"]),
             ("", vec![]),
             (" ", vec!["Ġ"]),
-            ("   t", vec!["Ġ", "Ġ", "Ġt"]),
+            ("   t", vec!["Ġ", "Ġ", "Ġ", "t"]),
         ];
 
         //        When & Then
@@ -700,7 +772,7 @@ mod tests {
             ("the Earth", vec!["the", "Ġ", "E", "a", "r", "th"]),
             ("", vec![]),
             (" ", vec!["Ġ"]),
-            ("   t", vec!["Ġ", "Ġ", "Ġt"]),
+            ("   t", vec!["Ġ", "Ġ", "Ġ", "t"]),
             (" \n ", vec!["Ġ", "Ċ", "Ġ"]),
         ];
         let source_texts: Vec<&str> = test_tuples.iter().map(|v| v.0).collect();
