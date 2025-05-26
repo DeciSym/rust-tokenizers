@@ -104,3 +104,13 @@ assert_eq!(encoding.token_ids, expected_ids);
 - SentencePiece models use the same `.model` proto files as the C++ library
 - The library prioritizes performance and correctness
 - All tokenizers support truncation strategies and special token handling
+
+## Tokenizer References
+
+- GPT-NeoX Tokenizer:
+  - Key details about the GPTNeoX tokenizer:
+    - The tokenizer is based on byte-level Byte-Pair-Encoding (BPE)
+    - It allocates additional tokens to whitespace characters, making the model more suitable for certain tasks like code generation
+    - It treats spaces like parts of the tokens (similar to SentencePiece)
+    - The tokenizer implementation is available in HuggingFace's transformers library as GPTNeoXTokenizerFast
+  - Reference the "Tokenization" section of the article "GPT-NeoX-20B: An Open-Source Autoregressive Language Model" from https://arxiv.org/pdf/2204.06745
